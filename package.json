@@ -1,0 +1,51 @@
+{
+  "name": "vault-mission-control",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Vault: a fault-tolerant distributed object storage engine with a live mission-control dashboard",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:single": "tsc -b && vite build --mode single",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "typecheck": "tsc -b",
+    "cluster": "tsx server/main.ts",
+    "cluster:fresh": "tsx server/main.ts --fresh",
+    "dev:live": "concurrently -k -n cluster,web -c green,blue \"npm:cluster\" \"npm:dev\"",
+    "start": "npm run build && tsx server/main.ts",
+    "test:server": "vitest run server",
+    "test:web": "vitest run src"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "tsx": "^4.23.15",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^5.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
+    "concurrently": "^10.0.5",
+    "jsdom": "^26.1.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0",
+    "vite-plugin-singlefile": "^2.3.0",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.6"
+  }
+}
