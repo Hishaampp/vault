@@ -4,3 +4,7 @@ dist-single
 coverage
 *.log
 .vault-data
+
+.env
+.env.local
+.env.*.local

@@ -24,7 +24,12 @@ const opt = (name: string, fallback: string) => {
 };
 
 const port = Number(opt('port', process.env.VAULT_PORT ?? process.env.PORT ?? '7070'));
-const dataDir = resolve(opt('data', join(ROOT, '.vault-data')));
+const dataDir = resolve(
+  opt(
+    'data',
+    process.env.VAULT_DATA_DIR ?? join(ROOT, '.vault-data')
+  )
+);
 if (flag('fresh')) await rm(dataDir, { recursive: true, force: true });
 
 const mgr = new ClusterManager({ dataDir, nodes: Number(opt('nodes', '9')), seed: !flag('no-seed'), quiet: !flag('verbose') });
@@ -43,7 +48,7 @@ server.on('error', async (err: NodeJS.ErrnoException) => {
   await mgr.stop();
   process.exit(1);
 });
-server.listen(port, () => {
+server.listen(port, "0.0.0.0", () => {
   console.log(`\nVault is running.`);
   console.log(`  API        http://localhost:${port}/api/health`);
   console.log(`  Dashboard  http://localhost:${port}   (after "npm run build"; or run "npm run dev" and open http://localhost:5173)`);

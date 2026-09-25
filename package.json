@@ -21,6 +21,7 @@
     "test:web": "vitest run src"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "express": "^5.2.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -31,6 +32,7 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^14.6.1",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.4",
     "@types/react": "^19.1.0",
