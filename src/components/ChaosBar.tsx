@@ -34,4 +34,5 @@ export function ChaosBar({ snap, actions, selected, onChange }: Props) {
       </div>
     </div>
   );
-}
+} 
+// JUST CHANGING
