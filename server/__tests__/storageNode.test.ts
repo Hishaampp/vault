@@ -83,7 +83,8 @@ describe('storage node process', () => {
     const r = await (await fetch(`${base}/chaos/corrupt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
     expect(r.key).toBe('c@1#0.0');
     expect(sha(await readFile(join(dir, encodeURIComponent('c@1#0.0'))))).not.toBe(sha(data));
-    await node.scrubStep(); await node.scrubStep();
+    // the background scrubber may already be mid-scan, so wait for detection instead of racing it
+    for (let i = 0; i < 100 && !node.corrupt.has('c@1#0.0'); i++) await new Promise((r) => setTimeout(r, 20));
     expect(node.corrupt.has('c@1#0.0')).toBe(true);
     await put(base, 'c@1#0.0', data);
     expect(node.corrupt.has('c@1#0.0')).toBe(false);

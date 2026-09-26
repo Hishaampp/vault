@@ -38,15 +38,17 @@ export function EventLog({ snap, limit, onViewAll, filterable }: Props) {
       {entries.length === 0 ? (
         <p className="empty">No events yet.</p>
       ) : (
-        <ol className="log" role="log" aria-live="off">
-          {entries.map((e) => (
-            <li key={e.id} data-kind={e.kind}>
-              <time className="mono">{fmtClock(e.t - snap.startedAt)}</time>
-              <i aria-hidden="true" />
-              <span>{e.msg}</span>
-            </li>
-          ))}
-        </ol>
+        <div className="log-scroll" role="log" aria-live="off" aria-labelledby="log-title" tabIndex={0}>
+          <ol className="log">
+            {entries.map((e) => (
+              <li key={e.id} data-kind={e.kind}>
+                <time className="mono">{fmtClock(e.t - snap.startedAt)}</time>
+                <i aria-hidden="true" />
+                <span>{e.msg}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
       )}
     </section>
   );

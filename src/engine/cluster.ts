@@ -1,5 +1,7 @@
-import { ecEncode, ecRebuild } from './gf256';
+import { ecDecode, ecEncode, ecRebuild, joinShards } from './gf256';
 import { hash32, randomBytes, sha256 } from './hash';
+import { parseKey, pieceKey } from './keys';
+import { pickRepairTarget, placeAcrossRacks, rackLoad } from './placement';
 import { fmtBytes, fmtSecs } from './format';
 import { POLICIES, minNeeded, pieceCount, writeQuorum } from './policies';
 import type {
@@ -26,14 +28,7 @@ export interface ClusterOptions {
   transferScale?: number;
 }
 
-export const pieceKey = (name: string, version: number, s: number, i: number): string => `${name}@${version}#${s}.${i}`;
-
-export function parseKey(k: string): { name: string; ver: number; s: number; i: number } {
-  const a = k.lastIndexOf('@');
-  const [ver, si] = k.slice(a + 1).split('#');
-  const [s, i] = si.split('.');
-  return { name: k.slice(0, a), ver: Number(ver), s: Number(s), i: Number(i) };
-}
+export { parseKey, pieceKey } from './keys';
 
 export class VaultCluster {
   readonly clock: () => number;
@@ -69,6 +64,7 @@ export class VaultCluster {
   private logSeq = 0;
   private nodeSeq: number;
   private pending = new Set<Promise<unknown>>();
+  private listeners = new Set<() => void>();
   private lastSample: number;
   private lastWrite: number;
   private writing = false;
@@ -107,6 +103,16 @@ export class VaultCluster {
     this.pending.add(p);
     p.finally(() => this.pending.delete(p)).catch(() => undefined);
     return p;
+  }
+
+  /** Subscribe to state changes (called after every control-loop step). Returns an unsubscribe function. */
+  subscribe(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => { this.listeners.delete(fn); };
+  }
+
+  private notify(): void {
+    for (const fn of this.listeners) fn();
   }
 
   /** Resolves once every background async task (hashing, repairs) has finished. */
@@ -159,41 +165,26 @@ export class VaultCluster {
 
   /* ---------------------------------------------------------------- write path */
 
-  /**
-   * Rendezvous hashing with even rack spreading: pieces are dealt round-robin
-   * across racks, so a 4+2 segment lands 2-2-2 and survives losing a whole rack.
-   */
+  /** Rendezvous hashing with even rack spreading (see placement.ts). */
   placeSegment(key: string, count: number): StorageNode[] {
-    const score = (n: StorageNode) => hash32(`${key}|${n.id}`);
-    const byRack = new Map<string, StorageNode[]>();
-    for (const n of this.nodes.filter((x) => x.status === 'healthy').sort((a, b) => score(b) - score(a))) {
-      const list = byRack.get(n.rack) ?? [];
-      list.push(n);
-      byRack.set(n.rack, list);
-    }
-    const racks = [...byRack.values()].sort((a, b) => score(b[0]) - score(a[0]));
-    const out: StorageNode[] = [];
-    while (out.length < count) {
-      let progressed = false;
-      for (const list of racks) {
-        if (out.length >= count) break;
-        const n = list.shift();
-        if (n) { out.push(n); progressed = true; }
-      }
-      if (!progressed) break;
-    }
-    return out;
+    return placeAcrossRacks(this.nodes.filter((n) => n.status === 'healthy'), key, count);
   }
 
   /** How many live pieces of a segment each rack holds. */
   private rackLoad(sg: Segment, exclude = -1): Map<string, number> {
-    const load = new Map<string, number>();
-    sg.pieces.forEach((q, i) => {
-      const n = this.nodeById(q.node);
-      if (i !== exclude && n && n.status !== 'dead') load.set(n.rack, (load.get(n.rack) ?? 0) + 1);
-    });
-    return load;
+    return rackLoad(sg.pieces, (id) => {
+      const n = this.nodeById(id);
+      return n && n.status !== 'dead' ? n.rack : undefined;
+    }, exclude);
   }
+
+  /** Pieces referenced per node, computed once per scheduling pass. */
+  private refCounts(): Map<string, number> {
+    const refs = new Map<string, number>();
+    this.forEachPiece((_o, _sg, _s, p) => { if (p.node) refs.set(p.node, (refs.get(p.node) ?? 0) + 1); });
+    return refs;
+  }
+  private refsThisPass: Map<string, number> | null = null;
 
   private dropVersion(o: VaultObject): void {
     o.segments.forEach((sg, s) => sg.pieces.forEach((p, i) => {
@@ -335,14 +326,9 @@ export class VaultCluster {
       if (pol.type === 'rep') {
         segBytes = good[0].bytes;
       } else {
-        segBytes = new Uint8Array(pol.k! * sg.shardLen);
-        let rebuilt = false;
-        for (let j = 0; j < pol.k!; j++) {
-          const d = good.find((g) => g.idx === j);
-          if (!d) rebuilt = true;
-          segBytes.set(d ? d.bytes : ecRebuild(pol.k!, pol.m!, good, j, sg.shardLen), j * sg.shardLen);
-        }
-        if (rebuilt) decoded++;
+        const data = ecDecode(pol.k!, pol.m!, good, sg.shardLen);
+        if (good.some((g) => g.idx >= pol.k!)) decoded++;
+        segBytes = joinShards(data, sg.shardLen, sg.len);
       }
       parts.push(segBytes.subarray(0, sg.len));
     }
@@ -460,22 +446,17 @@ export class VaultCluster {
 
   private pickTarget(o: VaultObject, sg: Segment, s: number): StorageNode | null {
     const used = new Set(sg.pieces.map((q) => q.node).filter((x): x is string => !!x));
-    for (const f of this.inflight) if (f.job.obj === o.name && f.job.ver === o.version && f.job.s === s) used.add(f.target);
     const load = this.rackLoad(sg);
     for (const f of this.inflight) {
       if (f.job.obj === o.name && f.job.ver === o.version && f.job.s === s) {
+        used.add(f.target);
         const r = this.nodeById(f.target)?.rack;
         if (r) load.set(r, (load.get(r) ?? 0) + 1);
       }
     }
-    const cands = this.nodes.filter((n) => n.status === 'healthy' && this.usable(n) && !used.has(n.id));
-    if (!cands.length) return null;
-    const key = `${o.name}@${o.version}#${s}`;
-    cands.sort((a, b) =>
-      (load.get(a.rack) ?? 0) - (load.get(b.rack) ?? 0)
-      || a.store.size - b.store.size
-      || hash32(key + b.id) - hash32(key + a.id));
-    return cands[0];
+    this.refsThisPass ??= this.refCounts();
+    const healthy = this.nodes.filter((n) => n.status === 'healthy' && this.usable(n));
+    return pickRepairTarget(healthy, used, load, this.refsThisPass, `${o.name}@${o.version}#${s}`);
   }
 
   private flightDur(len: number, ec: boolean): number {
@@ -517,6 +498,7 @@ export class VaultCluster {
   }
 
   private dispatch(t: number): void {
+    this.refsThisPass = null;
     if (!this.leader || !this.queue.length) return;
     for (const j of this.queue) j.pri = this.jobPriority(j);
     this.queue.sort((a, b) => a.pri! - b.pri! || a.added - b.added);
@@ -754,6 +736,7 @@ export class VaultCluster {
     this.traffic(t);
     this.track(this.scrubStep());
     this.sample(t);
+    this.notify();
   }
 
   /* -------------------------------------------------------------- chaos actions */

@@ -6,7 +6,7 @@ export interface UseClusterOptions {
   seed?: boolean;
   /** run the control-plane loop (tests drive ticks manually) */
   running?: boolean;
-  /** UI refresh interval in ms */
+  /** minimum ms between repaints */
   refreshMs?: number;
 }
 
@@ -24,11 +24,21 @@ export function useCluster(injected?: VaultCluster, opts: UseClusterOptions = {}
 
   useEffect(() => {
     if (seed && !cluster.seeded) cluster.seedDemo().then(refresh);
+    // Repaint when the cluster changes, at most once per `refreshMs`.
+    let last = 0;
+    let pending: number | undefined;
+    const schedule = () => {
+      if (pending !== undefined) return;
+      const wait = Math.max(0, last + refreshMs - performance.now());
+      if (wait === 0) { last = performance.now(); refresh(); return; }
+      pending = window.setTimeout(() => { pending = undefined; last = performance.now(); refresh(); }, wait);
+    };
+    const off = cluster.subscribe(schedule);
     const loop = running ? window.setInterval(() => cluster.tick(), 100) : undefined;
-    const paint = window.setInterval(refresh, refreshMs);
     return () => {
+      off();
       window.clearInterval(loop);
-      window.clearInterval(paint);
+      window.clearTimeout(pending);
     };
   }, [cluster, seed, running, refreshMs, refresh]);
 

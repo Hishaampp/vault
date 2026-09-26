@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+.vault-data
+.git
+.github
+bench
+**/__tests__
+*.log
+.DS_Store

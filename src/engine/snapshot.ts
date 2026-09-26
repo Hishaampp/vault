@@ -94,6 +94,8 @@ export interface ClusterSnapshot {
   repaired: number;
   silentRot: number;
   hues: Record<string, string>;
+  /** live backend only: state-changing requests need an API token */
+  authRequired?: boolean;
 }
 
 export interface ClusterActions {

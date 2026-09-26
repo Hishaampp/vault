@@ -48,7 +48,7 @@ export function ChunkMap({ snap, nodes, obj, verify, verifying, onVerify, onDele
           <button type="button" className="btn danger" onClick={onDelete}>Delete</button>
         </div>
       </div>
-      <div className="cmap-wrap">
+      <div className="cmap-wrap" role="region" tabIndex={0} aria-label={`Piece placement for ${obj.name}, scrollable`}>
         <div className="cmap" style={{ ['--cols' as string]: cols }} role="table" aria-label={`Piece placement for ${obj.name}`}>
           <div role="row" className="cmap-row">
             <div role="columnheader" className="hd"><span className="sr-only">Segment</span></div>

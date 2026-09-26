@@ -17,6 +17,7 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promise
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { requireNodeToken } from './auth';
 
 export interface StorageNodeOptions {
   id: string;
@@ -26,6 +27,8 @@ export interface StorageNodeOptions {
   /** pieces verified per scrub step */
   scrubBatch?: number;
   scrubIntervalMs?: number;
+  /** shared secret required on every request (defaults to VAULT_NODE_TOKEN) */
+  token?: string;
 }
 
 interface PieceEntry { len: number; sum: string }
@@ -84,7 +87,13 @@ export async function createStorageNode(opts: StorageNodeOptions) {
   const timer = setInterval(scrubStep, opts.scrubIntervalMs ?? 150);
 
   const app = express();
+  app.disable('x-powered-by');
+  app.use(requireNodeToken(opts.token ?? process.env.VAULT_NODE_TOKEN));
   app.use('/pieces', express.raw({ type: () => true, limit: '64mb' }));
+  app.param('key', (_req, res, next, key: string) => {
+    if (key.length > 1024 || /[\u0000-\u001f]/.test(key)) { res.status(400).json({ error: 'invalid key' }); return; }
+    next();
+  });
   app.use(express.json());
 
   app.put('/pieces/:key', async (req, res) => {
@@ -188,7 +197,7 @@ function arg(name: string, fallback?: string): string {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    // If the manager process dies, exit too instead of lingering as an orphan.
+  // If the manager process dies, exit too instead of lingering as an orphan.
   process.on('disconnect', () => process.exit(0));
   const node = await createStorageNode({ id: arg('id'), rack: arg('rack'), dir: arg('dir'), scrub: arg('scrub', 'true') === 'true' });
   const port = Number(arg('port'));

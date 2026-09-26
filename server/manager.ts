@@ -11,11 +11,13 @@ import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fmtBytes, fmtSecs } from '../src/engine/format';
-import { ecEncode, ecRebuild } from '../src/engine/gf256';
+import { ecDecode, ecEncode, ecRebuild, joinShards } from '../src/engine/gf256';
 import { hash32 } from '../src/engine/hash';
 import { POLICIES, minNeeded, pieceCount, writeQuorum } from '../src/engine/policies';
 import { emptySeries, type ClusterSnapshot, type LiveSettings, type NodeInfo } from '../src/engine/snapshot';
 import type { LogEntry, LogKind, NodeStatus, PieceMeta, PolicyKey, ReadResult, Segment, VaultObject, WriteResult } from '../src/engine/types';
+import { parseKey, pieceKey } from '../src/engine/cluster';
+import { pickRepairTarget, placeAcrossRacks, rackLoad } from '../src/engine/placement';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STORAGE_SCRIPT = join(ROOT, 'server', 'storageNode.ts');
@@ -27,12 +29,15 @@ const HUES = ['#5B8DEF', '#C9A15B', '#D9779C', '#4FB3C8', '#9AAE5A', '#E08E6D', 
 const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const enc = encodeURIComponent;
-export const pieceKey = (name: string, version: number, s: number, i: number) => `${name}@${version}#${s}.${i}`;
-export function parseKey(k: string) {
-  const a = k.lastIndexOf('@');
-  const [ver, si = ''] = k.slice(a + 1).split('#');
-  const [s, i] = si.split('.');
-  return { name: k.slice(0, a), ver: Number(ver), s: Number(s), i: Number(i) };
+export { parseKey, pieceKey };
+
+/** Run async work over items with at most `limit` in flight. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => { while (next < items.length) { const i = next++; out[i] = await fn(items[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 export function freePort(): Promise<number> {
@@ -92,6 +97,8 @@ export interface ManagerOptions {
   seed?: boolean;
   /** silence child process output */
   quiet?: boolean;
+  /** shared secret for manager-to-node calls (random per start if omitted) */
+  nodeToken?: string;
 }
 
 export class ClusterManager {
@@ -129,8 +136,12 @@ export class ClusterManager {
   private quorumWas = true;
   private timers: NodeJS.Timeout[] = [];
   private stopped = false;
+  /** Secret every storage node and metadata replica requires; never leaves this machine. */
+  private readonly nodeToken: string;
+  private refsThisPass: Map<string, number> | null = null;
 
   constructor(private opts: ManagerOptions) {
+    this.nodeToken = opts.nodeToken ?? randomBytes(32).toString('hex');
     this.settings = {
       policy: 'ec42',
       deadTimeout: opts.deadTimeout ?? 5000,
@@ -188,7 +199,10 @@ export class ClusterManager {
 
   private fork(script: string, args: string[]): ChildProcess {
     const out = this.opts.quiet ? 'ignore' : 'inherit';
-    return fork(script, args, { cwd: ROOT, execArgv: ['--import', 'tsx'], stdio: ['ignore', out, out, 'ipc'] });
+    return fork(script, args, {
+      cwd: ROOT, execArgv: ['--import', 'tsx'], stdio: ['ignore', out, out, 'ipc'],
+      env: { ...process.env, VAULT_NODE_TOKEN: this.nodeToken },
+    });
   }
 
   private spawnNode(n: NodeRec) {
@@ -224,7 +238,9 @@ export class ClusterManager {
       await sleep(Math.min(timeoutMs, 250));
       throw new Error('unreachable: network partition');
     }
-    return fetch(`http://127.0.0.1:${t.port}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const headers = new Headers(init.headers);
+    headers.set('x-vault-token', this.nodeToken);
+    return fetch(`http://127.0.0.1:${t.port}${path}`, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
   }
 
   private async putPiece(n: NodeRec, key: string, bytes: Uint8Array, sum: string, timeout = 5000): Promise<boolean> {
@@ -351,8 +367,9 @@ export class ClusterManager {
   /** A node that returns nearly empty gets a fair share of data moved back onto it. */
   private rebalanceIfUnderloaded(n: NodeRec) {
     const live = this.nodes.filter((x) => x.status === 'healthy' && this.usable(x));
-    const avg = live.reduce((a, x) => a + this.countRefs(x.id), 0) / Math.max(1, live.length);
-    if (this.countRefs(n.id) < avg * 0.5) n.pendingRebalance = true;
+    const refs = this.refCounts();
+    const avg = live.reduce((a, x) => a + (refs.get(x.id) ?? 0), 0) / Math.max(1, live.length);
+    if ((refs.get(n.id) ?? 0) < avg * 0.5) n.pendingRebalance = true;
   }
 
   /* ----------------------------------------------------------------- metadata */
@@ -451,41 +468,26 @@ export class ClusterManager {
   }
 
   countRefs(id: string): number {
-    let c = 0;
-    for (const o of this.objects.values()) for (const sg of o.segments) for (const p of sg.pieces) if (p.node === id) c++;
-    return c;
+    return this.refCounts().get(id) ?? 0;
+  }
+
+  /** Pieces referenced per node in one pass over metadata. */
+  refCounts(): Map<string, number> {
+    const refs = new Map<string, number>();
+    for (const o of this.objects.values()) for (const sg of o.segments) for (const p of sg.pieces) if (p.node) refs.set(p.node, (refs.get(p.node) ?? 0) + 1);
+    return refs;
   }
 
   private rackLoad(sg: Segment, exclude = -1): Map<string, number> {
-    const load = new Map<string, number>();
-    sg.pieces.forEach((q, i) => {
-      const n = this.nodeById(q.node);
-      if (i !== exclude && n && n.status !== 'dead') load.set(n.rack, (load.get(n.rack) ?? 0) + 1);
-    });
-    return load;
+    return rackLoad(sg.pieces, (id) => {
+      const n = this.nodeById(id);
+      return n && n.status !== 'dead' ? n.rack : undefined;
+    }, exclude);
   }
 
-  /** Rendezvous hashing, dealing pieces round-robin across racks. */
+  /** Rendezvous hashing with even rack spreading (shared with the simulator). */
   placeSegment(key: string, count: number): NodeRec[] {
-    const score = (n: NodeRec) => hash32(`${key}|${n.id}`);
-    const byRack = new Map<string, NodeRec[]>();
-    for (const n of this.nodes.filter((x) => x.status === 'healthy').sort((a, b) => score(b) - score(a))) {
-      const list = byRack.get(n.rack) ?? [];
-      list.push(n);
-      byRack.set(n.rack, list);
-    }
-    const racks = [...byRack.values()].sort((a, b) => score(b[0]) - score(a[0]));
-    const out: NodeRec[] = [];
-    while (out.length < count) {
-      let progressed = false;
-      for (const list of racks) {
-        if (out.length >= count) break;
-        const n = list.shift();
-        if (n) { out.push(n); progressed = true; }
-      }
-      if (!progressed) break;
-    }
-    return out;
+    return placeAcrossRacks(this.nodes.filter((x) => x.status === 'healthy'), key, count);
   }
 
   /* --------------------------------------------------------------- write path */
@@ -508,13 +510,15 @@ export class ClusterManager {
     const segments: Segment[] = [];
     let shortest = Infinity;
 
-    for (let s = 0; s < nSeg; s++) {
+    // Up to 4 segments are encoded and written in parallel; within a segment all pieces go out at once.
+    const results = await mapLimit(Array.from({ length: nSeg }, (_, s) => s), 4, async (s) => {
       const seg = bytes.subarray(s * pol.seg, Math.min(bytes.length, (s + 1) * pol.seg));
       let shards: Uint8Array[];
       let shardLen = seg.length;
       if (pol.type === 'rep') shards = Array.from({ length: pol.n! }, () => seg);
       else ({ shards, shardLen } = ecEncode(pol.k!, pol.m!, seg));
-      const sums = shards.map(sha256);
+      // replicas are identical, so hash once
+      const sums = pol.type === 'rep' ? new Array<string>(shards.length).fill(sha256(seg)) : shards.map(sha256);
       const targets = this.placeSegment(`${name}@${ver}#${s}`, count);
       const oks = await Promise.all(shards.map(async (pb, i) => {
         const n = targets[i];
@@ -525,10 +529,11 @@ export class ClusterManager {
         return ok;
       }));
       const pieces = shards.map((pb, i) => ({ idx: i, node: oks[i] ? targets[i].id : null, sum: sums[i], len: pb.length, corrupt: false }));
-      const placed = oks.filter(Boolean).length;
-      shortest = Math.min(shortest, placed);
-      segments.push({ len: seg.length, shardLen, pieces });
-      if (placed < q) break;
+      return { segment: { len: seg.length, shardLen, pieces } as Segment, placed: oks.filter(Boolean).length };
+    });
+    for (const r of results) {
+      segments.push(r.segment);
+      shortest = Math.min(shortest, r.placed);
     }
 
     const rollback = () => Promise.all(written.map(([n, k]) => this.delPiece(n, k)));
@@ -596,14 +601,9 @@ export class ClusterManager {
       let segBytes: Uint8Array;
       if (pol.type === 'rep') segBytes = good[0].bytes;
       else {
-        segBytes = new Uint8Array(pol.k! * sg.shardLen);
-        let rebuilt = false;
-        for (let j = 0; j < pol.k!; j++) {
-          const d = good.find((g) => g.idx === j);
-          if (!d) rebuilt = true;
-          segBytes.set(d ? d.bytes : ecRebuild(pol.k!, pol.m!, good, j, sg.shardLen), j * sg.shardLen);
-        }
-        if (rebuilt) decoded++;
+        const data = ecDecode(pol.k!, pol.m!, good, sg.shardLen);
+        if (good.some((g) => g.idx >= pol.k!)) decoded++;
+        segBytes = joinShards(data, sg.shardLen, sg.len);
       }
       parts.push(segBytes.subarray(0, sg.len));
     }
@@ -690,11 +690,9 @@ export class ClusterManager {
         if (r) load.set(r, (load.get(r) ?? 0) + 1);
       }
     }
-    const cands = this.nodes.filter((n) => n.status === 'healthy' && this.usable(n) && !used.has(n.id));
-    if (!cands.length) return null;
-    const key = `${o.name}@${o.version}#${s}`;
-    cands.sort((a, b) => (load.get(a.rack) ?? 0) - (load.get(b.rack) ?? 0) || this.countRefs(a.id) - this.countRefs(b.id) || hash32(key + b.id) - hash32(key + a.id));
-    return cands[0];
+    this.refsThisPass ??= this.refCounts();
+    const healthy = this.nodes.filter((n) => n.status === 'healthy' && this.usable(n));
+    return pickRepairTarget(healthy, used, load, this.refsThisPass, `${o.name}@${o.version}#${s}`);
   }
 
   private transferMs(len: number) {
@@ -735,6 +733,7 @@ export class ClusterManager {
   }
 
   private dispatch(t: number) {
+    this.refsThisPass = null;
     if (!this.hasQuorum() || !this.queue.length) return;
     for (const j of this.queue) j.pri = this.jobPriority(j);
     this.queue.sort((a, b) => a.pri! - b.pri! || a.added - b.added);
@@ -804,7 +803,8 @@ export class ClusterManager {
 
   private planRebalance(nn: NodeRec) {
     const live = this.nodes.filter((n) => n.status === 'healthy' && this.usable(n));
-    const load = new Map(live.map((n) => [n.id, this.countRefs(n.id)]));
+    const refs = this.refCounts();
+    const load = new Map(live.map((n) => [n.id, refs.get(n.id) ?? 0]));
     const total = [...load.values()].reduce((a, b) => a + b, 0);
     const target = Math.floor(total / live.length);
     const cands: { o: VaultObject; s: number; p: PieceMeta; i: number }[] = [];

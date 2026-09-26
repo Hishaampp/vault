@@ -4,7 +4,7 @@ import { POLICIES } from '../engine/policies';
 import { nodeLookup, objectHealthIn, type ClusterActions, type ClusterSnapshot } from '../engine/snapshot';
 import { ChunkMap, type VerifyMessage } from './ChunkMap';
 
-export const MAX_UPLOAD = 100 * 1024 * 1024; // 100 MB
+export const MAX_UPLOAD = 8 * 1048576;
 
 /** Blob.arrayBuffer with a FileReader fallback for older browsers. */
 function readFile(file: File): Promise<ArrayBuffer> {
@@ -47,7 +47,7 @@ export function ObjectsPanel({ snap, actions, onChange }: Props) {
   async function upload(file: File | undefined) {
     if (!file) return;
     if (file.size > MAX_UPLOAD) {
-      setNote(`${file.name} is ${fmtBytes(file.size)}. Upload a file of 100 MB or less.`);
+      setNote(`${file.name} is ${fmtBytes(file.size)}. Upload a file of 8 MB or less.`);
       return;
     }
     setNote(`Storing ${file.name}…`);
@@ -81,6 +81,9 @@ export function ObjectsPanel({ snap, actions, onChange }: Props) {
       </div>
       <div className="obj-body">
         <div className="obj-side">
+          {/* Drag-and-drop is a mouse shortcut only. Keyboard and screen-reader users upload through
+              the labelled file input inside this label, so the drop handlers need no keyboard equivalent. */}
+          {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
           <label
             className={`drop${over ? ' over' : ''}`}
             onDragOver={(e) => { e.preventDefault(); setOver(true); }}
@@ -89,9 +92,7 @@ export function ObjectsPanel({ snap, actions, onChange }: Props) {
           >
             <input ref={fileRef} type="file" className="sr-only" aria-label="Upload a file" onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
             <b>Upload a file</b> or drop it here
-            <span className="drop-note" role="status">
-  {note ?? `Up to 100 MB, stored as ${POLICIES[policy].label}`}
-</span>
+            <span className="drop-note" role="status">{note ?? `Up to 8 MB, stored as ${POLICIES[policy].label}`}</span>
           </label>
           <div className="olist">
             {list.length === 0 && <p className="empty">No objects yet. Upload a file to get started.</p>}

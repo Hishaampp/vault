@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => ({
     globals: true,
     setupFiles: ['./src/setupTests.ts'],
     testTimeout: 30_000,
-    coverage: { include: ['src/engine/**', 'src/components/**', 'src/hooks/**'] },
+    coverage: { include: ['src/engine/**', 'src/components/**', 'src/hooks/**', 'server/**'], exclude: ['**/__tests__/**', 'server/main.ts'] },
+    benchmark: { include: ['bench/**/*.bench.ts'] },
   },
 }));

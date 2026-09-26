@@ -3,7 +3,6 @@ import type { ThemeChoice } from '../hooks/useTheme';
 import type { VaultMode } from '../hooks/useVault';
 import { Icon, Logo } from './Icon';
 
-
 interface Props {
   title: string;
   subtitle: string;
@@ -32,7 +31,7 @@ export function Header({ title, subtitle, snap, mode, connected, theme, onCycleT
       <div className="tb-title">
         <Logo className="tb-logo" />
         <div className="tb-text">
-          <h1>{title}</h1>
+          <h1 id="page-title" tabIndex={-1}>{title}</h1>
           <p className="tb-sub">{subtitle}</p>
         </div>
       </div>

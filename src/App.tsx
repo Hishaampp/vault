@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VaultCluster } from './engine/cluster';
 import type { UseClusterOptions } from './hooks/useCluster';
 import { useTheme } from './hooks/useTheme';
+import { ApiTokenPanel } from './components/ApiTokenPanel';
 import { useVault } from './hooks/useVault';
 import { DurabilityPanel } from './components/DurabilityPanel';
 import { EventLog } from './components/EventLog';
 import { Header } from './components/Header';
 import { MetricsPanels } from './components/MetricsPanels';
+import { NodesPage } from './components/NodesPage';
 import { ObjectsPanel } from './components/ObjectsPanel';
 import { OverheadPanel } from './components/OverheadPanel';
 import { PoliciesPanel } from './components/PoliciesPanel';
-import { Topology } from './components/Topology';
-import { Page, PAGES, Sidebar } from './components/Sidebar';
+import { PAGES, Sidebar, type Page } from './components/Sidebar';
 import { StatCards } from './components/StatCards';
-import { NodesPage } from './components/NodesPage';
+import { Topology } from './components/Topology';
 
 interface AppProps {
   /** inject a pre-built simulator cluster (used by tests; forces simulator mode) */
@@ -54,6 +55,19 @@ function usePage(): [Page, (p: Page) => void] {
   return [page, go];
 }
 
+/**
+ * After navigating, name the page in the browser tab and move keyboard and
+ * screen-reader focus to its heading, so the change is announced (WCAG 2.4.2, 2.4.3).
+ */
+function usePageFocus(page: Page, title: string) {
+  const first = useRef(true);
+  useEffect(() => {
+    document.title = `${title} · Vault`;
+    if (first.current) { first.current = false; return; }
+    document.getElementById('page-title')?.focus();
+  }, [page, title]);
+}
+
 function Dashboard({ cluster: injected, options, onReset }: AppProps & { onReset: () => void }) {
   const { mode, snap, at, actions, refresh, connected } = useVault(injected, options);
   const { theme, cycle } = useTheme();
@@ -61,6 +75,7 @@ function Dashboard({ cluster: injected, options, onReset }: AppProps & { onReset
   const [selected, setSelected] = useState<string | null>(null);
   const select = (id: string | null) => { setSelected(id); refresh(); };
   const meta = PAGES.find((p) => p.id === page)!;
+  usePageFocus(page, meta.title);
 
   let body;
   if (!snap) {
@@ -109,27 +124,33 @@ function Dashboard({ cluster: injected, options, onReset }: AppProps & { onReset
     body = (
       <div className="settings-grid">
         <PoliciesPanel snap={snap} actions={actions} onChange={refresh} />
-        <section className="panel" aria-labelledby="about-title">
-          <h2 id="about-title">About this cluster</h2>
-          <dl className="kv about">
-            <dt>Mode</dt><dd>{snap.mode === 'live' ? 'Live Node.js cluster' : 'In-browser simulator'}</dd>
-            <dt>Storage nodes</dt><dd>{snap.nodes.length} in {snap.racks.length} racks</dd>
-            <dt>Metadata</dt><dd>{snap.meta.length} replicas</dd>
-            <dt>Erasure coding</dt><dd>Reed-Solomon over GF(2⁸)</dd>
-            <dt>Checksums</dt><dd>SHA-256 on every piece</dd>
-            <dt>Placement</dt><dd>Rendezvous hashing, rack-aware</dd>
-          </dl>
-        </section>
+        <div className="stack">
+          {snap.authRequired && <ApiTokenPanel />}
+          <section className="panel" aria-labelledby="about-title">
+            <h2 id="about-title">About this cluster</h2>
+            <dl className="kv about">
+              <dt>Mode</dt><dd>{snap.mode === 'live' ? 'Live Node.js cluster' : 'In-browser simulator'}</dd>
+              <dt>Storage nodes</dt><dd>{snap.nodes.length} in {snap.racks.length} racks</dd>
+              <dt>Metadata</dt><dd>{snap.meta.length} replicas</dd>
+              <dt>Erasure coding</dt><dd>Reed-Solomon over GF(2⁸)</dd>
+              <dt>Checksums</dt><dd>SHA-256 on every piece</dd>
+              <dt>Placement</dt><dd>Rendezvous hashing, rack-aware</dd>
+            </dl>
+          </section>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="shell">
+      <a className="skip-link" href="#main" onClick={(e) => { e.preventDefault(); document.getElementById('main')?.focus(); }}>
+        Skip to main content
+      </a>
       <Sidebar page={page} onNavigate={go} snap={snap} mode={mode} connected={connected} onReset={mode === 'simulated' ? onReset : undefined} />
       <div className="content">
         <Header title={meta.title} subtitle={meta.subtitle} snap={snap} mode={mode} connected={connected} theme={theme} onCycleTheme={cycle} />
-        <main className="page" key={page}>
+        <main className="page" id="main" tabIndex={-1} key={page} aria-labelledby="page-title">
           {body}
           {snap && (
             <footer className="page-foot">

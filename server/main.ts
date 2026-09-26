@@ -8,6 +8,13 @@
  * Flags: --port 7070  --data ./.vault-data  --nodes 9  --fresh  --no-seed
  *
  * Port 7070 is the default because macOS uses 7000 for AirPlay Receiver.
+ *
+ * Environment:
+ *   VAULT_PORT / PORT      port to listen on (Cloud Run sets PORT)
+ *   VAULT_API_TOKEN        require `Authorization: Bearer <token>` for every change
+ *   VAULT_CORS_ORIGINS     comma-separated extra origins allowed to call the API
+ *   VAULT_ENABLE_CHAOS     set to "false" to disable fault injection
+ *   VAULT_MAX_UPLOAD_MB    largest accepted upload (default 64)
  */
 import { rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -24,19 +31,22 @@ const opt = (name: string, fallback: string) => {
 };
 
 const port = Number(opt('port', process.env.VAULT_PORT ?? process.env.PORT ?? '7070'));
-const dataDir = resolve(
-  opt(
-    'data',
-    process.env.VAULT_DATA_DIR ?? join(ROOT, '.vault-data')
-  )
-);
+const dataDir = resolve(opt('data', join(ROOT, '.vault-data')));
 if (flag('fresh')) await rm(dataDir, { recursive: true, force: true });
 
 const mgr = new ClusterManager({ dataDir, nodes: Number(opt('nodes', '9')), seed: !flag('no-seed'), quiet: !flag('verbose') });
 console.log(`Starting Vault: ${opt('nodes', '9')} storage nodes + 3 metadata replicas, data in ${dataDir}`);
 await mgr.start();
 
-const { server } = createGateway(mgr, { staticDir: join(ROOT, 'dist') });
+const env = process.env;
+const { server } = createGateway(mgr, {
+  staticDir: join(ROOT, 'dist'),
+  apiToken: env.VAULT_API_TOKEN || undefined,
+  corsOrigins: (env.VAULT_CORS_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean),
+  enableChaos: env.VAULT_ENABLE_CHAOS !== 'false',
+  maxUploadMb: Number(env.VAULT_MAX_UPLOAD_MB ?? 64),
+});
+if (env.VAULT_API_TOKEN) console.log('API token required for uploads, deletes, settings, and fault injection.');
 server.on('error', async (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\nPort ${port} is already in use by another program.`);
@@ -48,7 +58,7 @@ server.on('error', async (err: NodeJS.ErrnoException) => {
   await mgr.stop();
   process.exit(1);
 });
-server.listen(port, "0.0.0.0", () => {
+server.listen(port, () => {
   console.log(`\nVault is running.`);
   console.log(`  API        http://localhost:${port}/api/health`);
   console.log(`  Dashboard  http://localhost:${port}   (after "npm run build"; or run "npm run dev" and open http://localhost:5173)`);

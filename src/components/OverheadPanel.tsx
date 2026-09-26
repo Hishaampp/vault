@@ -12,6 +12,7 @@ export function OverheadPanel({ snap }: { snap: ClusterSnapshot }) {
       <div className="chart-head"><h2>Storage overhead</h2><span className="chart-val">{pct(o.logical, o.raw)}<small>extra</small></span></div>
       <div className="table-scroll">
         <table>
+          <caption className="sr-only">Raw storage used by each durability policy</caption>
           <thead><tr><th scope="col">Policy</th><th scope="col">Objects</th><th scope="col">Stored</th><th scope="col">Extra</th></tr></thead>
           <tbody>
             {rows.map((r) => (

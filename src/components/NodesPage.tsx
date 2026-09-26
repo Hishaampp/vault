@@ -39,8 +39,9 @@ export function NodesPage({ snap, actions, onChange }: Props) {
             <button type="button" className="btn primary" onClick={act(() => actions.addNode())}><Icon name="plus" size={15} />Add node</button>
           </div>
         </div>
-        <div className="table-wrap">
+        <div className="table-wrap" role="region" tabIndex={0} aria-label="Storage nodes table, scrollable">
           <table className="table">
+            <caption className="sr-only">Storage nodes with their rack, status, process state, stored pieces, and actions</caption>
             <thead>
               <tr>
                 <th scope="col">Node</th>

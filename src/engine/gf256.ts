@@ -99,6 +99,42 @@ export function ecEncode(k: number, m: number, seg: Uint8Array): { shardLen: num
   return { shardLen: L, shards: data.concat(parity) };
 }
 
+/** Inverse decode matrices keyed by which shards survived. At most C(k+m, k) entries (15 for 4+2). */
+const invCache = new Map<string, number[][]>();
+
+function decodeMatrix(k: number, m: number, idxs: number[]): number[][] {
+  const key = `${k}+${m}:${idxs.join(',')}`;
+  let inv = invCache.get(key);
+  if (!inv) {
+    const M = encMatrix(k, m);
+    inv = invertMat(idxs.map((i) => M[i]));
+    if (invCache.size > 512) invCache.clear();
+    invCache.set(key, inv);
+  }
+  return inv;
+}
+
+/**
+ * Recover all k data shards from any k available shards with a single matrix
+ * inversion (cached per survivor set). Shards that survived are reused as-is.
+ */
+export function ecDecode(
+  k: number,
+  m: number,
+  avail: { idx: number; bytes: Uint8Array }[],
+  shardLen: number,
+): Uint8Array[] {
+  if (avail.length < k) throw new Error(`need ${k} shards, have ${avail.length}`);
+  const use = [...avail].sort((a, b) => a.idx - b.idx).slice(0, k);
+  const data: (Uint8Array | undefined)[] = Array.from({ length: k }, () => undefined);
+  for (const a of use) if (a.idx < k) data[a.idx] = a.bytes;
+  if (data.every((d) => d !== undefined)) return data as Uint8Array[];
+  const inv = decodeMatrix(k, m, use.map((a) => a.idx));
+  const srcs = use.map((a) => a.bytes);
+  for (let j = 0; j < k; j++) if (!data[j]) data[j] = mulRow(inv[j], srcs, shardLen);
+  return data as Uint8Array[];
+}
+
 /** Rebuild shard `idx` from any k available shards. */
 export function ecRebuild(
   k: number,
@@ -108,16 +144,15 @@ export function ecRebuild(
   shardLen: number,
 ): Uint8Array {
   if (avail.length < k) throw new Error(`need ${k} shards, have ${avail.length}`);
-  const M = encMatrix(k, m);
-  const use = avail.slice(0, k);
-  const direct = use.find((a) => a.idx === idx);
+  const direct = avail.find((a) => a.idx === idx);
   if (direct) return direct.bytes.slice();
-  const inv = invertMat(use.map((a) => M[a.idx]));
-  const srcs = use.map((a) => a.bytes);
-  const data: Uint8Array[] = [];
-  for (let j = 0; j < k; j++) {
-    const d = use.find((a) => a.idx === j);
-    data.push(d ? d.bytes : mulRow(inv[j], srcs, shardLen));
-  }
-  return idx < k ? data[idx] : mulRow(M[idx], data, shardLen);
+  const data = ecDecode(k, m, avail, shardLen);
+  return idx < k ? data[idx].slice() : mulRow(encMatrix(k, m)[idx], data, shardLen);
+}
+
+/** Join decoded data shards back into the original segment bytes. */
+export function joinShards(data: Uint8Array[], shardLen: number, len: number): Uint8Array {
+  const out = new Uint8Array(data.length * shardLen);
+  data.forEach((d, j) => out.set(d, j * shardLen));
+  return out.subarray(0, len);
 }

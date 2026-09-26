@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import App from '../../App';
 import { bytesOf, setup } from '../../engine/__tests__/testkit';
 
-const OPTS = { seed: false, running: false, refreshMs: 30 } as const;
+const OPTS = { seed: false, running: false, refreshMs: 0 } as const;
 
 async function renderWithCluster() {
   const kit = setup();
