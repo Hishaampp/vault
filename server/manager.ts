@@ -147,7 +147,7 @@ export class ClusterManager {
       deadTimeout: opts.deadTimeout ?? 5000,
       concurrency: opts.concurrency ?? 4,
       scrub: opts.scrub ?? true,
-      traffic: opts.traffic ?? true,
+      traffic: opts.traffic ?? false,
       bandwidth: opts.bandwidth ?? 1,
     };
   }
@@ -243,17 +243,51 @@ export class ClusterManager {
     return fetch(`http://127.0.0.1:${t.port}${path}`, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
   }
 
-  private async putPiece(n: NodeRec, key: string, bytes: Uint8Array, sum: string, timeout = 5000): Promise<boolean> {
-    try {
-      const r = await this.call(n, `/pieces/${enc(key)}`, {
-        method: 'PUT', headers: { 'content-type': 'application/octet-stream', 'x-sha256': sum }, body: bytes as unknown as BodyInit,
-      }, timeout);
-      if (r.ok) { n.keys.add(key); this.ledger.delete(`${n.id}|${key}`); }
-      return r.ok;
-    } catch {
-      return false;
+ private async putPiece(
+  n: NodeRec,
+  key: string,
+  bytes: Uint8Array,
+  sum: string,
+  timeout = 15000,
+): Promise<boolean> {
+  try {
+    const r = await this.call(
+      n,
+      `/pieces/${enc(key)}`,
+      {
+        method: 'PUT',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'x-sha256': sum,
+        },
+        body: bytes as unknown as BodyInit,
+      },
+      timeout,
+    );
+
+    if (r.ok) {
+      n.keys.add(key);
+      this.ledger.delete(`${n.id}|${key}`);
+      return true;
     }
+
+    const errorText = await r.text().catch(() => '');
+
+    console.error(
+      `[Vault] Replica write failed: node=${n.id} ` +
+      `status=${r.status} key=${key} error=${errorText}`,
+    );
+
+    return false;
+  } catch (err) {
+    console.error(
+      `[Vault] Replica connection failed: node=${n.id} key=${key}`,
+      err,
+    );
+
+    return false;
   }
+}
 
   private async getPiece(n: NodeRec, key: string, timeout = 2000): Promise<Uint8Array | null> {
     try {
