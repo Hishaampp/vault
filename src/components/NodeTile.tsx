@@ -46,7 +46,7 @@ export function NodeTile({ node, hues, selected, receiving, onSelect }: Props) {
         {more > 0 && <span className="pmore">+{more}</span>}
       </span>
       <span className="node-foot">
-        <span>{node.pieceCount} pieces</span>
+        <span>{node.status === 'dead' ? `${node.pieceCount} old pieces on disk` : `${node.pieceCount} pieces`}</span>
         <span>{fmtBytes(node.bytes)}</span>
       </span>
     </button>

@@ -1,46 +1,51 @@
 import { headlineOf, type ClusterSnapshot } from '../engine/snapshot';
-import type { VaultMode } from '../hooks/useVault';
 import type { ThemeChoice } from '../hooks/useTheme';
+import type { VaultMode } from '../hooks/useVault';
+import { Icon, Logo } from './Icon';
+
 
 interface Props {
+  title: string;
+  subtitle: string;
   snap: ClusterSnapshot | null;
   mode: VaultMode;
   connected: boolean;
   theme: ThemeChoice;
   onCycleTheme: () => void;
-  onReset?: () => void;
 }
 
-const THEME_LABEL: Record<ThemeChoice, string> = { system: 'Theme: auto', light: 'Theme: light', dark: 'Theme: dark' };
+const THEME = {
+  system: { label: 'Theme: auto', short: 'Auto', icon: 'monitor' },
+  light: { label: 'Theme: light', short: 'Light', icon: 'sun' },
+  dark: { label: 'Theme: dark', short: 'Dark', icon: 'moon' },
+} as const;
 
-export function Header({ snap, mode, connected, theme, onCycleTheme, onReset }: Props) {
+/** Sticky page header: title, live cluster status, and theme switch. */
+export function Header({ title, subtitle, snap, mode, connected, theme, onCycleTheme }: Props) {
   const { tone, text } = snap
     ? headlineOf(snap)
     : { tone: 'ok' as const, text: mode === 'detecting' ? 'Looking for a live cluster…' : 'Connecting to the cluster…' };
-  const badge = mode === 'live'
-    ? { cls: connected ? 'live' : 'down', text: connected ? 'Live cluster' : 'Reconnecting…' }
-    : mode === 'simulated' ? { cls: 'sim', text: 'Simulator' } : null;
+  const t = THEME[theme];
+  const badge = mode === 'live' ? (connected ? 'Live' : 'Reconnecting') : mode === 'simulated' ? 'Simulator' : null;
   return (
-    <header className="top">
-      <div className="brand">
-        <svg className="logo" viewBox="0 0 34 34" aria-hidden="true">
-          <circle cx="17" cy="17" r="14" fill="none" stroke="currentColor" strokeWidth="2.6" />
-          <circle cx="17" cy="17" r="4.5" fill="currentColor" />
-          <path d="M17 3v7M17 24v7M3 17h7M24 17h7" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
-        </svg>
-        <div>
-          <h1>Vault</h1>
-          <p className="sub">Fault-tolerant object storage</p>
+    <header className="topbar">
+      <div className="tb-title">
+        <Logo className="tb-logo" />
+        <div className="tb-text">
+          <h1>{title}</h1>
+          <p className="tb-sub">{subtitle}</p>
         </div>
       </div>
-      <p className="headline" data-tone={tone} role="status" aria-live="polite">
-        <span className="dot" aria-hidden="true" />
-        <span className="txt">{text}</span>
-      </p>
-      <div className="top-actions">
-        {badge && <span className={`mode ${badge.cls}`} title={mode === 'live' ? 'Connected to real Node.js processes' : 'Running entirely in this browser tab'}>{badge.text}</span>}
-        <button type="button" className="btn ghost" onClick={onCycleTheme}>{THEME_LABEL[theme]}</button>
-        {onReset && <button type="button" className="btn ghost" onClick={onReset}>Reset cluster</button>}
+      <div className="tb-right">
+        <p className="status-pill" data-tone={tone} role="status" aria-live="polite">
+          <span className="dot" aria-hidden="true" />
+          <span className="txt">{text}</span>
+        </p>
+        {badge && <span className="mode-chip" data-mode={mode} data-connected={connected || undefined}>{badge}</span>}
+        <button type="button" className="btn ghost theme-btn" aria-label={t.label} title={t.label} onClick={onCycleTheme}>
+          <Icon name={t.icon} size={16} />
+          <span className="theme-short">{t.short}</span>
+        </button>
       </div>
     </header>
   );

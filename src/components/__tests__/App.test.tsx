@@ -18,7 +18,14 @@ async function renderWithCluster() {
   return { ...kit, user, advance };
 }
 
-afterEach(() => document.documentElement.removeAttribute('data-theme'));
+afterEach(() => {
+  document.documentElement.removeAttribute('data-theme');
+  window.history.replaceState(null, '', '#');
+});
+
+/** Click a sidebar link, e.g. go(user, 'Objects'). */
+const go = (user: ReturnType<typeof userEvent.setup>, page: string) =>
+  user.click(screen.getByRole('link', { name: new RegExp(`^${page}`) }));
 
 describe('<App />', () => {
   it('renders every storage node, the metadata cluster, and a healthy headline', async () => {
@@ -75,6 +82,7 @@ describe('<App />', () => {
 
   it('"Read and verify" proves the object is bit-for-bit intact', async () => {
     const { user } = await renderWithCluster();
+    await go(user, 'Objects');
     await user.click(screen.getByRole('button', { name: /notes\/readme\.txt/ }));
     await user.click(screen.getByRole('button', { name: 'Read and verify' }));
     await waitFor(() => expect(screen.getByText(/SHA-256 matches the original exactly/)).toBeInTheDocument());
@@ -82,6 +90,7 @@ describe('<App />', () => {
 
   it('shows a chunk map with one row per segment and a column per piece', async () => {
     const { user } = await renderWithCluster();
+    await go(user, 'Objects');
     await user.click(screen.getByRole('button', { name: /videos\/demo\.mp4/ }));
     const table = screen.getByRole('table', { name: /Piece placement for videos\/demo\.mp4/ });
     expect(within(table).getAllByRole('columnheader')).toHaveLength(7); // label + 4 data + 2 parity
@@ -91,8 +100,10 @@ describe('<App />', () => {
 
   it('uploads a file with the selected durability policy', async () => {
     const { user, cluster } = await renderWithCluster();
+    await go(user, 'Settings');
     await user.click(screen.getByRole('radio', { name: 'Replicate ×2' }));
     expect(screen.getByTestId('policy-help')).toHaveTextContent('Two full copies');
+    await go(user, 'Objects');
     const file = new File([new Uint8Array(5000).fill(7)], 'hello.bin', { type: 'application/octet-stream' });
     await user.upload(screen.getByLabelText('Upload a file'), file);
     await waitFor(() => expect(screen.getByText(/Stored hello\.bin as Replicate ×2/)).toBeInTheDocument());
@@ -101,6 +112,7 @@ describe('<App />', () => {
 
   it('rejects uploads larger than 8 MB with a clear message', async () => {
     const { user, cluster } = await renderWithCluster();
+    await go(user, 'Objects');
     const big = new File([new Uint8Array(8 * 1048576 + 1)], 'huge.iso');
     await user.upload(screen.getByLabelText('Upload a file'), big);
     expect(await screen.findByText(/huge\.iso is 8\.00 MB\. Upload a file of 8 MB or less/)).toBeInTheDocument();
@@ -109,6 +121,7 @@ describe('<App />', () => {
 
   it('policy sliders and toggles update the engine settings', async () => {
     const { user, cluster } = await renderWithCluster();
+    await go(user, 'Settings');
     await user.click(screen.getByRole('checkbox', { name: /integrity scrubber/i }));
     expect(cluster.settings.scrub).toBe(true); // setup() starts with it off; clicking turns it on
     await user.click(screen.getByRole('checkbox', { name: /client traffic/i }));
@@ -136,5 +149,47 @@ describe('<App />', () => {
     for (let i = 0; i < 80 && cluster.silentRotCount() > 0; i++) await advance(100);
     await advance(100);
     await waitFor(() => expect(screen.queryByText(/has not noticed yet/)).not.toBeInTheDocument());
+  });
+
+  it('sidebar navigation switches pages and keeps the page in the URL', async () => {
+    const { user } = await renderWithCluster();
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^Overview/ })).toHaveAttribute('aria-current', 'page');
+    for (const page of ['Nodes', 'Objects', 'Activity', 'Settings']) {
+      await go(user, page);
+      expect(screen.getByRole('heading', { level: 1, name: page })).toBeInTheDocument();
+      expect(window.location.hash).toBe(`#/${page.toLowerCase()}`);
+    }
+  });
+
+  it('overview shows key metrics', async () => {
+    await renderWithCluster();
+    const stats = screen.getByRole('region', { name: 'Key metrics' });
+    expect(within(stats).getByText('Healthy')).toBeInTheDocument();
+    expect(within(stats).getByText('9 / 9')).toBeInTheDocument();
+    expect(within(stats).getByText('2')).toBeInTheDocument();
+  });
+
+  it('nodes page lists every node and can crash one from the table', async () => {
+    const { user, cluster } = await renderWithCluster();
+    await go(user, 'Nodes');
+    expect(screen.getAllByRole('row')).toHaveLength(10); // header + 9 nodes
+    await user.click(screen.getByRole('button', { name: 'Crash n3' }));
+    expect(cluster.nodeById('n3')!.up).toBe(false);
+    expect(await screen.findByRole('button', { name: 'Restart n3' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Crash metadata m2' }));
+    expect(cluster.meta.find((m) => m.id === 'm2')!.up).toBe(false);
+  });
+
+  it('activity page filters events by kind', async () => {
+    const { user, cluster } = await renderWithCluster();
+    cluster.crashNode('n1');
+    cluster.addLog('info', 'hello from the test');
+    await go(user, 'Activity');
+    const log = screen.getByRole('log');
+    expect(within(log).getByText('n1 crashed')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Faults' }));
+    expect(within(screen.getByRole('log')).queryByText('hello from the test')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('log')).getByText('n1 crashed')).toBeInTheDocument();
   });
 });
