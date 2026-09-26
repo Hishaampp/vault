@@ -25,12 +25,25 @@ export function useVault(injected?: VaultCluster, opts: UseClusterOptions = {}):
   const forceSim = !!injected || (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('sim'));
   const [mode, setMode] = useState<VaultMode>(forceSim ? 'simulated' : 'detecting');
 
+  // Look for the live cluster. It can take a few seconds to start (12 processes),
+  // so retry briefly before falling back to the simulator, then keep checking in
+  // the background and switch to live as soon as it answers.
   useEffect(() => {
-    if (mode !== 'detecting') return;
+    if (forceSim || mode === 'live') return;
     let alive = true;
-    RemoteCluster.detect().then((live) => { if (alive) setMode(live ? 'live' : 'simulated'); });
-    return () => { alive = false; };
-  }, [mode]);
+    let timer: number | undefined;
+    let tries = 0;
+    const check = async () => {
+      const live = await RemoteCluster.detect();
+      if (!alive) return;
+      if (live) { setMode('live'); return; }
+      tries++;
+      if (mode === 'detecting' && tries >= 4) setMode('simulated');
+      timer = window.setTimeout(check, mode === 'detecting' ? 1000 : 4000);
+    };
+    check();
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [mode, forceSim]);
 
   const local = useLocal(mode === 'simulated', injected, opts);
   const remote = useRemote(mode === 'live');
